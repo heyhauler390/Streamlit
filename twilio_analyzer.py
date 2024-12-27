@@ -1,41 +1,75 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
+from pytz import timezone
 
-# Caching the data loading functions
+# Caching data loading functions
 @st.cache_data
-def load_twilio_log(uploaded_file):
-    """Load the Twilio log file (CSV format)"""
-    return pd.read_csv(uploaded_file)
+def load_twilio_logs(uploaded_files):
+    """Load multiple Twilio log files (CSV format) into a combined DataFrame."""
+    combined_data = pd.DataFrame()
+    for file in uploaded_files:
+        df = pd.read_csv(file)
+        combined_data = pd.concat([combined_data, df], ignore_index=True)
+    return combined_data
 
 @st.cache_data
 def load_customer_list(customer_file):
-    """Load the customer list file (Excel format)"""
+    """Load the customer list file (Excel format)."""
     return pd.read_excel(customer_file)
 
 # Title of the app
-st.title("Twilio Message Log Analyzer")
+st.title("Twilio Multi-File Log Analyzer")
 
-# Step 1: Upload the Twilio log file
-uploaded_file = st.file_uploader("Upload your Twilio message log (CSV format)", type=["csv"])
-customer_file = st.file_uploader("Upload your customer list (Excel format)", type=["xlsx"])
+# Step 1: Upload multiple Twilio log files
+uploaded_files = st.file_uploader(
+    "Upload your Twilio message logs (CSV format)", 
+    type=["csv"], 
+    accept_multiple_files=True
+)
+customer_file = st.file_uploader(
+    "Upload your customer list (Excel format)", 
+    type=["xlsx"]
+)
 
-if uploaded_file and customer_file:
-    # Load data using caching
-    message_log = load_twilio_log(uploaded_file)
+if uploaded_files and customer_file:
+    # Load data
+    message_logs = load_twilio_logs(uploaded_files)
     customer_list = load_customer_list(customer_file)
 
-    # Step 3: Standardize Column Names for Matching
-    message_log.rename(columns={"to": "PhoneNumber"}, inplace=True)
+    # Rename dateSent to date for consistency
+    if "dateSent" in message_logs.columns:
+        message_logs.rename(columns={"dateSent": "date"}, inplace=True)
+    else:
+        st.error("The column 'dateSent' was not found in the log files.")
+        st.stop()
+
+    # Ensure the date column is parsed correctly
+    message_logs["date"] = pd.to_datetime(message_logs["date"], errors="coerce", utc=True)
+
+    # Convert to Mountain Time
+    mountain_tz = timezone("US/Mountain")
+    message_logs["date"] = message_logs["date"].dt.tz_convert(mountain_tz)
+
+    # Extract only the date part
+    message_logs["date"] = message_logs["date"].dt.date
+
+    # Check for invalid dates
+    if message_logs["date"].isnull().any():
+        st.warning("Some rows have invalid dates. These rows will be ignored.")
+        message_logs = message_logs[message_logs["date"].notnull()]
+
+    # Standardize column names for matching
+    message_logs.rename(columns={"to": "PhoneNumber"}, inplace=True)
     customer_list.rename(columns={"Number": "PhoneNumber"}, inplace=True)
 
     # Ensure 'PhoneNumber' columns are strings
-    message_log["PhoneNumber"] = message_log["PhoneNumber"].astype(str)
+    message_logs["PhoneNumber"] = message_logs["PhoneNumber"].astype(str)
     customer_list["PhoneNumber"] = customer_list["PhoneNumber"].astype(str)
 
-    # Step 4: Merge the data
+    # Merge the data
     merged_data = pd.merge(
-        message_log, customer_list, on="PhoneNumber", how="left"
+        message_logs, customer_list, on="PhoneNumber", how="left"
     )
 
     # Ensure numSegments is numeric and clean
@@ -55,57 +89,51 @@ if uploaded_file and customer_file:
         st.error("price column not found in the merged data.")
         st.stop()
 
-    # Step 5: Create Combined Table
-    if "CO" in merged_data.columns:
-        # Total messages
-        total_messages = merged_data.groupby("CO").size().reset_index(name="Total Messages")
+    # Display the most recent date
+    most_recent_date = merged_data["date"].max()
+    st.subheader(f"Most Recent Date in Logs: {most_recent_date}")
 
-        # Messages by segment type
-        pivot_segments = pd.pivot_table(
-            merged_data,
-            values="PhoneNumber",
-            index="CO",
-            columns="numSegments",
-            aggfunc="count",
-            fill_value=0
-        ).reset_index()
+    # Filter data to the most recent date
+    recent_data = merged_data[merged_data["date"] == most_recent_date]
 
-        # Total cost
-        total_cost = merged_data.groupby("CO")["price"].sum().reset_index(name="Total Cost")
+    # Analytics for the most recent date
+    st.subheader("Analytics for the Most Recent Date")
 
-        # Merge all tables
-        combined_table = pd.merge(total_messages, pivot_segments, on="CO", how="outer")
-        combined_table = pd.merge(combined_table, total_cost, on="CO", how="outer")
+    # Total messages by customer
+    total_messages = recent_data.groupby("CO").size().reset_index(name="Total Messages")
 
-        # Display combined table
-        st.subheader("Combined Customer Summary Table")
-        st.dataframe(combined_table)
+    # Messages by segment type
+    pivot_segments = pd.pivot_table(
+        recent_data,
+        values="PhoneNumber",
+        index="CO",
+        columns="numSegments",
+        aggfunc="count",
+        fill_value=0
+    ).reset_index()
 
-        # Download combined table as CSV
-        combined_csv = combined_table.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Download Combined Table as CSV",
-            data=combined_csv,
-            file_name="combined_customer_summary.csv",
-            mime="text/csv"
-        )
+    # Total cost by customer
+    total_cost = recent_data.groupby("CO")["price"].sum().reset_index(name="Total Cost")
 
-        # Add a pie chart for total costs
-        filtered_total_cost = total_cost[total_cost["Total Cost"] > 0]
-        st.subheader("Total Costs per Customer - Pie Chart")
-        if not filtered_total_cost.empty:
-            fig, ax = plt.subplots()
-            ax.pie(
-                filtered_total_cost["Total Cost"],
-                labels=filtered_total_cost["CO"],
-                autopct='%1.1f%%',
-                startangle=90
-            )
-            ax.axis("equal")  # Equal aspect ratio ensures the pie is drawn as a circle.
-            st.pyplot(fig)
-        else:
-            st.write("No data to display in the pie chart. All costs are zero or negative.")
-    else:
-        st.error("CO column not found in the merged data.")
+    # Combine analytics into a single table
+    combined_analytics = pd.merge(total_messages, pivot_segments, on="CO", how="outer")
+    combined_analytics = pd.merge(combined_analytics, total_cost, on="CO", how="outer")
+
+    # Display combined analytics
+    st.dataframe(combined_analytics)
+
+    # Create a historic stacked column chart for costs
+    st.subheader("Historic Stacked Column Chart: Total Costs by Date and Customer")
+    cost_by_date_customer = merged_data.groupby(["date", "CO"])["price"].sum().reset_index()
+    fig = px.bar(
+        cost_by_date_customer,
+        x="date",
+        y="price",
+        color="CO",
+        title="Total Costs by Date (Stacked by Customer)",
+        labels={"price": "Total Cost ($)", "date": "Date", "CO": "Customer"}
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 else:
-    st.write("Please upload both the Twilio log (CSV) and customer list (Excel) files.")
+    st.write("Please upload multiple Twilio log files and a customer list.")

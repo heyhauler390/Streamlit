@@ -1,6 +1,6 @@
 import os
-import streamlit as st
 import pandas as pd
+import streamlit as st
 import plotly.express as px
 from pytz import timezone
 from collections import Counter
@@ -30,6 +30,14 @@ else:
     st.success("API key successfully loaded.")
     client = OpenAI(api_key=api_key)
 
+# Default customer list path
+DEFAULT_CUSTOMER_LIST_PATH = "TwilioPhoneMap.xlsx"
+
+@st.cache_data
+def load_default_customer_list():
+    """Load the default customer list file."""
+    return pd.read_excel(DEFAULT_CUSTOMER_LIST_PATH)
+
 @st.cache_data
 def load_twilio_logs(uploaded_files):
     """Load multiple Twilio log files (CSV format) into a combined DataFrame."""
@@ -40,11 +48,6 @@ def load_twilio_logs(uploaded_files):
     return combined_data
 
 @st.cache_data
-def load_customer_list(customer_file):
-    """Load the customer list file (Excel format)."""
-    return pd.read_excel(customer_file)
-
-@st.cache_data
 def most_frequent_messages(dataframe, column, top_n=10):
     """Find the most frequent full messages in a specific column."""
     message_counts = dataframe[column].value_counts().head(top_n).reset_index()
@@ -53,21 +56,34 @@ def most_frequent_messages(dataframe, column, top_n=10):
 
 st.title("Twilio Multi-File Log Analyzer with Chat")
 
-# File uploaders for logs and customer list
+# File uploader for logs
 uploaded_files = st.file_uploader(
     "Upload your Twilio message logs (CSV format)", 
     type=["csv"], 
     accept_multiple_files=True
 )
-customer_file = st.file_uploader(
-    "Upload your customer list (Excel format)", 
+
+# File uploader for customer list updates
+uploaded_customer_file = st.file_uploader(
+    "Upload an updated customer list (Excel format). If no file is uploaded, the default list will be used.", 
     type=["xlsx"]
 )
 
-if uploaded_files and customer_file:
-    # Load data
+# Load customer list
+if uploaded_customer_file:
+    customer_list = pd.read_excel(uploaded_customer_file)
+    st.success("Updated customer list loaded.")
+else:
+    if os.path.exists(DEFAULT_CUSTOMER_LIST_PATH):
+        customer_list = load_default_customer_list()
+        st.info("Using the default customer list.")
+    else:
+        st.error("Default customer list not found. Please upload a customer list.")
+        st.stop()
+
+if uploaded_files:
+    # Load message logs
     message_logs = load_twilio_logs(uploaded_files)
-    customer_list = load_customer_list(customer_file)
 
     # Rename and preprocess columns
     if "dateSent" in message_logs.columns:
@@ -179,4 +195,4 @@ if uploaded_files and customer_file:
         except Exception as e:
             st.error(f"Error: {str(e)}")
 else:
-    st.write("Please upload multiple Twilio log files and a customer list.")
+    st.write("Please upload your Twilio message logs.")

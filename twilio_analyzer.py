@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
 
 # Caching the data loading functions
 @st.cache_data
@@ -46,9 +47,9 @@ if uploaded_file and customer_file:
         st.error("numSegments column not found in the merged data.")
         st.stop()
 
-    # Ensure price is numeric and clean
+    # Ensure price is numeric and convert to positive
     if "price" in merged_data.columns:
-        merged_data["price"] = pd.to_numeric(merged_data["price"], errors="coerce")
+        merged_data["price"] = pd.to_numeric(merged_data["price"], errors="coerce").abs()
         merged_data["price"].fillna(0, inplace=True)
     else:
         st.error("price column not found in the merged data.")
@@ -69,6 +70,22 @@ if uploaded_file and customer_file:
             file_name="total_message_cost_by_customer.csv",
             mime="text/csv"
         )
+
+        # Add a pie chart for total costs
+        filtered_total_cost = total_cost[total_cost["Total Cost"] > 0]
+        st.subheader("Total Costs per Customer - Pie Chart")
+        if not filtered_total_cost.empty:
+            fig, ax = plt.subplots()
+            ax.pie(
+                filtered_total_cost["Total Cost"],
+                labels=filtered_total_cost["CO"],
+                autopct='%1.1f%%',
+                startangle=90
+            )
+            ax.axis("equal")  # Equal aspect ratio ensures the pie is drawn as a circle.
+            st.pyplot(fig)
+        else:
+            st.write("No data to display in the pie chart. All costs are zero or negative.")
 
         # Group by company (CO) and count the number of messages
         summary = merged_data.groupby("CO").size().reset_index(name="Message Count")

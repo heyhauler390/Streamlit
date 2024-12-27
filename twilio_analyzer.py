@@ -3,32 +3,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 from pytz import timezone
-from collections import Counter
 from openai import OpenAI
-from dotenv import load_dotenv
-
-# Load environment variables from .env file for local development
-load_dotenv()
-
-# Function to get the API key based on the environment
-def get_api_key():
-    try:
-        # Check if Streamlit secrets exist and retrieve the API key
-        return st.secrets["API_KEY"]
-    except (FileNotFoundError, KeyError, AttributeError):
-        # Fallback to .env for local development
-        return os.getenv("API_KEY")
-
-# Retrieve the API key
-api_key = get_api_key()
-
-# Initialize OpenAI client with the API key
-if not api_key:
-    st.error("API key not found. Please set it in a .env file for local development or Streamlit Secrets for deployment.")
-    st.stop()
-else:
-    st.success("API key successfully loaded.")
-    client = OpenAI(api_key=api_key)
 
 # Default customer list path
 DEFAULT_CUSTOMER_LIST_PATH = "TwilioPhoneMap.xlsx"
@@ -48,13 +23,23 @@ def load_twilio_logs(uploaded_files):
     return combined_data
 
 @st.cache_data
-def most_frequent_messages(dataframe, column, top_n=10):
-    """Find the most frequent full messages in a specific column."""
-    message_counts = dataframe[column].value_counts().head(top_n).reset_index()
-    message_counts.columns = ["Message", "Count"]
-    return message_counts
+def most_frequent(column, top_n=10):
+    """Find the most frequent entries in a specific column."""
+    return column.value_counts().head(top_n).reset_index()
 
-st.title("Twilio Multi-File Log Analyzer with Chat")
+# Initialize OpenAI API
+api_key = os.getenv("API_KEY")
+if not api_key:
+    st.error("OpenAI API key not found. Please set it as an environment variable or in Streamlit Secrets.")
+    st.stop()
+
+client = OpenAI(api_key=api_key)
+
+# Sidebar State Management
+if "selected_customer" not in st.session_state:
+    st.session_state["selected_customer"] = "All Customers"
+
+st.title("Twilio Customer-Specific Dashboard")
 
 # File uploader for logs
 uploaded_files = st.file_uploader(
@@ -103,96 +88,112 @@ if uploaded_files:
     merged_data["numSegments"] = pd.to_numeric(merged_data.get("numSegments", 0), errors="coerce").fillna(0).astype(int)
     merged_data["price"] = pd.to_numeric(merged_data.get("price", 0), errors="coerce").abs().fillna(0)
 
-    # Display most frequent messages
-    st.subheader("Most Frequent Messages")
-    frequent_messages = most_frequent_messages(merged_data, "body", top_n=10)
-    st.table(frequent_messages)
+    # Sidebar Tabs for Customers
+    all_customers = ["All Customers"] + customer_list["CO"].unique().tolist()
+    selected_customer = st.sidebar.radio("Select a Customer", all_customers, key="customer_selection")
 
-    # Most recent date
-    most_recent_date = merged_data["date"].max()
-    st.subheader(f"Most Recent Date in Logs: {most_recent_date}")
+    if selected_customer == "All Customers":
+        st.subheader("All Customers Overview")
 
-    # Filter for most recent date
-    recent_data = merged_data[merged_data["date"] == most_recent_date]
+        # Analytics for All Customers
+        total_messages = merged_data.groupby("CO").size().reset_index(name="Total Messages")
+        pivot_segments = pd.pivot_table(
+            merged_data,
+            values="PhoneNumber",
+            index="CO",
+            columns="numSegments",
+            aggfunc="count",
+            fill_value=0
+        ).reset_index()
+        total_cost = merged_data.groupby("CO")["price"].sum().reset_index(name="Total Cost")
 
-    # Total messages by customer
-    total_messages = recent_data.groupby("CO").size().reset_index(name="Total Messages")
+        combined_analytics = pd.merge(total_messages, pivot_segments, on="CO", how="outer")
+        combined_analytics = pd.merge(combined_analytics, total_cost, on="CO", how="outer")
 
-    # Messages by segment type
-    pivot_segments = pd.pivot_table(
-        recent_data,
-        values="PhoneNumber",
-        index="CO",
-        columns="numSegments",
-        aggfunc="count",
-        fill_value=0
-    ).reset_index()
+        # Display analytics
+        st.dataframe(combined_analytics)
 
-    # Total cost by customer
-    total_cost = recent_data.groupby("CO")["price"].sum().reset_index(name="Total Cost")
+        # Historic stacked column chart
+        cost_by_date_customer = merged_data.groupby(["date", "CO"])["price"].sum().reset_index()
+        fig = px.bar(
+            cost_by_date_customer,
+            x="date",
+            y="price",
+            color="CO",
+            title="Total Costs by Date (Stacked by Customer)",
+            labels={"price": "Total Cost ($)", "date": "Date", "CO": "Customer"}
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Combine analytics into a single table
-    combined_analytics = pd.merge(total_messages, pivot_segments, on="CO", how="outer")
-    combined_analytics = pd.merge(combined_analytics, total_cost, on="CO", how="outer")
-    st.dataframe(combined_analytics)
+        # Chat Interface
+        st.subheader("Ask Questions About Your Data")
+        user_question = st.text_input("Enter your question:")
 
-    # Historic stacked column chart
-    cost_by_date_customer = merged_data.groupby(["date", "CO"])["price"].sum().reset_index()
-    fig = px.bar(
-        cost_by_date_customer,
-        x="date",
-        y="price",
-        color="CO",
-        title="Total Costs by Date (Stacked by Customer)",
-        labels={"price": "Total Cost ($)", "date": "Date", "CO": "Customer"}
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        if user_question:
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a data analysis assistant."},
+                        {"role": "user", "content": f"Dataset: {merged_data.to_dict(orient='records')}. Question: {user_question}"}
+                    ]
+                )
+                answer = response.choices[0].message.content
+                st.write("Answer:")
+                st.write(answer)
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+    else:
+        st.subheader(f"Dashboard for {selected_customer}")
+        customer_data = merged_data[merged_data["CO"] == selected_customer]
 
-    # Chat Interface
-    st.subheader("Ask Questions About Your Data")
-    user_question = st.text_input("Enter your question:")
+        # Most frequent phone numbers
+        st.subheader("10 Most Frequent Phone Numbers")
+        top_numbers = most_frequent(customer_data["PhoneNumber"], top_n=10)
+        top_numbers.columns = ["Phone Number", "Count"]
+        st.table(top_numbers)
 
-    if user_question:
-        # Aggregate trends and reduce data size
-        trend_data = (
-            merged_data.groupby(["date", "CO", "numSegments"])
+        # Top messages for a selected number
+        selected_number = st.selectbox("Select a Phone Number", top_numbers["Phone Number"])
+        if selected_number:
+            st.subheader(f"Top Messages for {selected_number}")
+            messages_for_number = customer_data[customer_data["PhoneNumber"] == selected_number]["body"]
+            st.table(messages_for_number.head(10))
+
+        # Stacked column chart for message segments by date
+        st.subheader("Message Segments by Date")
+        segment_data = (
+            customer_data.groupby(["date", "numSegments"])
             .size()
-            .reset_index(name="Message Count")
-            .head(50)  # Limit to 50 rows for smaller context
+            .reset_index(name="Count")
         )
-        
-        # Aggregate phone number data
-        phone_data = (
-            merged_data.groupby(["CO", "PhoneNumber"]).size()
-            .reset_index(name="Total Messages")
-            .sort_values(by="Total Messages", ascending=False)
-            .head(50)  # Limit to 50 rows for smaller context
+        fig = px.bar(
+            segment_data,
+            x="date",
+            y="Count",
+            color="numSegments",
+            title=f"Messages Sent by Segment for {selected_customer}",
+            labels={"numSegments": "Message Segment", "Count": "Number of Messages", "date": "Date"}
         )
-        
-        # Limit the frequent messages to top 10
-        frequent_messages_limited = frequent_messages.head(10).to_dict(orient="records")
+        st.plotly_chart(fig, use_container_width=True)
 
-        # Combine reduced summaries
-        context_data = {
-            "trends": trend_data.to_dict(orient="records"),
-            "phone_summary": phone_data.to_dict(orient="records"),
-            "frequent_messages": frequent_messages_limited
-        }
+        # Chat Interface
+        st.subheader("Ask Questions About This Customer's Data")
+        user_question = st.text_input("Enter your question:", key=f"chat_{selected_customer}")
 
-        try:
-            # Call OpenAI API with reduced input
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a data analysis assistant. Use the provided dataset to answer questions."},
-                    {"role": "user", "content": f"Dataset: {context_data}. Question: {user_question}"}
-                ]
-            )
-            # Extract response
-            answer = response.choices[0].message.content
-            st.write("Answer:")
-            st.write(answer)
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
+        if user_question:
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a data analysis assistant."},
+                        {"role": "user", "content": f"Dataset for {selected_customer}: {customer_data.to_dict(orient='records')}. Question: {user_question}"}
+                    ]
+                )
+                answer = response.choices[0].message.content
+                st.write("Answer:")
+                st.write(answer)
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
 else:
     st.write("Please upload your Twilio message logs.")

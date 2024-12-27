@@ -5,3 +5,4 @@ streamlit
 openpyxl
 plotly
 openai
+tabulate

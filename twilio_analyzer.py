@@ -55,19 +55,38 @@ if uploaded_file and customer_file:
         st.error("price column not found in the merged data.")
         st.stop()
 
-    # Step 5: Aggregate Messages by Company (CO)
+    # Step 5: Create Combined Table
     if "CO" in merged_data.columns:
-        # Total cost by company
-        total_cost = merged_data.groupby("CO")["price"].sum().reset_index(name="Total Cost")
-        st.subheader("Total Message Cost by Customer")
-        st.dataframe(total_cost)
+        # Total messages
+        total_messages = merged_data.groupby("CO").size().reset_index(name="Total Messages")
 
-        # Option to download the total cost table
-        total_cost_csv = total_cost.to_csv(index=False).encode("utf-8")
+        # Messages by segment type
+        pivot_segments = pd.pivot_table(
+            merged_data,
+            values="PhoneNumber",
+            index="CO",
+            columns="numSegments",
+            aggfunc="count",
+            fill_value=0
+        ).reset_index()
+
+        # Total cost
+        total_cost = merged_data.groupby("CO")["price"].sum().reset_index(name="Total Cost")
+
+        # Merge all tables
+        combined_table = pd.merge(total_messages, pivot_segments, on="CO", how="outer")
+        combined_table = pd.merge(combined_table, total_cost, on="CO", how="outer")
+
+        # Display combined table
+        st.subheader("Combined Customer Summary Table")
+        st.dataframe(combined_table)
+
+        # Download combined table as CSV
+        combined_csv = combined_table.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="Download Total Cost Summary as CSV",
-            data=total_cost_csv,
-            file_name="total_message_cost_by_customer.csv",
+            label="Download Combined Table as CSV",
+            data=combined_csv,
+            file_name="combined_customer_summary.csv",
             mime="text/csv"
         )
 
@@ -86,43 +105,6 @@ if uploaded_file and customer_file:
             st.pyplot(fig)
         else:
             st.write("No data to display in the pie chart. All costs are zero or negative.")
-
-        # Group by company (CO) and count the number of messages
-        summary = merged_data.groupby("CO").size().reset_index(name="Message Count")
-        st.subheader("Message Summary by Company")
-        st.dataframe(summary)
-
-        csv = summary.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Message Summary as CSV",
-            data=csv,
-            file_name="message_summary_by_company.csv",
-            mime="text/csv"
-        )
-
-        # Step 6: Create Pivot Table for numSegments
-        pivot_table = pd.pivot_table(
-            merged_data,
-            values="PhoneNumber",  # Use PhoneNumber to count occurrences
-            index="CO",
-            columns="numSegments",
-            aggfunc="count",
-            fill_value=0
-        )
-
-        # Reset index to display as a table
-        pivot_table.reset_index(inplace=True)
-
-        st.subheader("Message Segments Count by Customer")
-        st.dataframe(pivot_table)
-
-        pivot_csv = pivot_table.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Message Segments Summary as CSV",
-            data=pivot_csv,
-            file_name="message_segments_summary.csv",
-            mime="text/csv"
-        )
     else:
         st.error("CO column not found in the merged data.")
 else:

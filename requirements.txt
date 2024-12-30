@@ -6,4 +6,4 @@ openpyxl
 plotly
 openai
 tabulate
-dotenv
+python-dotenv
